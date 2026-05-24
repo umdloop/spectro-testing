@@ -54,7 +54,15 @@ extern "C" {
 
 /* Exported constants --------------------------------------------------------*/
 /* USER CODE BEGIN EC */
+#define CCDSize 3694
+#define RxDataSize 12
 
+/* ICG / SH alignment offsets, in TIM ticks. Same values as F401 port.
+ * F401 timer clock = 8 MHz; L476 timer clock = 80 MHz (10x faster), so the
+ * actual time offsets are 1/10 of the F401 values (~112 ns / ~125 ns).
+ * Empirically fine for TCD1304; retune if first pixel shows phase artifacts. */
+#define SH_delay 10
+#define ICG_delay 9
 /* USER CODE END EC */
 
 /* Exported macro ------------------------------------------------------------*/

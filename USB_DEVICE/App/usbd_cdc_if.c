@@ -109,7 +109,14 @@ uint8_t UserTxBufferFS[APP_TX_DATA_SIZE];
 extern USBD_HandleTypeDef hUsbDeviceFS;
 
 /* USER CODE BEGIN EXPORTED_VARIABLES */
+extern __IO uint8_t data_flag;
+extern __IO uint8_t change_exposure_flag;
+extern __IO uint8_t avg_exps;
+extern __IO uint8_t exps_left;
+extern __IO uint8_t coll_mode;
 
+extern __IO uint32_t SH_period;
+extern __IO uint32_t ICG_period;
 /* USER CODE END EXPORTED_VARIABLES */
 
 /**
@@ -263,6 +270,32 @@ static int8_t CDC_Receive_FS(uint8_t* Buf, uint32_t *Len)
   /* USER CODE BEGIN 6 */
   USBD_CDC_SetRxBuffer(&hUsbDeviceFS, &Buf[0]);
   USBD_CDC_ReceivePacket(&hUsbDeviceFS);
+
+  /* Command frame from host. Format identical to F401 tcd1304-usb:
+   *   [0]='E' [1]='R'   magic
+   *   [2..5]            SH_period  (big-endian uint32)
+   *   [6..9]            ICG_period (big-endian uint32)
+   *   [10]              coll_mode  (0=single, 1=continuous)
+   *   [11]              avg_exps   (1..15)
+   * NOTE: host should send periods scaled to the L476 timer clock (80 MHz)
+   * — 10x the values used with the F401 (8 MHz). */
+  if ((Buf[0] == 69) && (Buf[1] == 82))
+  {
+    change_exposure_flag = 1;
+    data_flag = 0;
+
+    ICG_period = ((uint32_t)Buf[6]<<24) | ((uint32_t)Buf[7]<<16) | ((uint32_t)Buf[8]<<8) | (uint32_t)Buf[9];
+    SH_period  = ((uint32_t)Buf[2]<<24) | ((uint32_t)Buf[3]<<16) | ((uint32_t)Buf[4]<<8) | (uint32_t)Buf[5];
+
+    coll_mode = Buf[10];
+
+    avg_exps = 1;
+    if ((Buf[11] < 16) && (Buf[11] > 0))
+      avg_exps = Buf[11];
+
+    exps_left = avg_exps;
+  }
+
   return (USBD_OK);
   /* USER CODE END 6 */
 }

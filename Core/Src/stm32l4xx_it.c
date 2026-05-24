@@ -49,10 +49,20 @@
 
 /* USER CODE END PFP */
 
+/* Private variables ---------------------------------------------------------*/
+/* USER CODE BEGIN PV */
+extern __IO uint8_t pulse_counter;
+extern __IO uint8_t CCD_flushed;
+
+extern __IO uint16_t aTxBuffer[CCDSize];
+extern __IO uint8_t avg_exps;
+extern __IO uint8_t exps_left;
+extern __IO uint8_t data_flag;
+extern __IO uint8_t in_reading;
+/* USER CODE END PV */
+
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-extern void on_tim2_update(void);
-extern void on_dma_transfer_complete(void);
 /* USER CODE END 0 */
 
 /* External variables --------------------------------------------------------*/
@@ -206,14 +216,39 @@ void SysTick_Handler(void)
 void DMA1_Channel1_IRQHandler(void)
 {
   /* USER CODE BEGIN DMA1_Channel1_IRQn 0 */
-  if (LL_DMA_IsActiveFlag_TC1(DMA1))
+  /* DMA transfer complete = one full CCD frame captured. Port of F401
+   * DMA2_Stream0_IRQHandler from tcd1304-usb/Core/Src/stm32f4xx_it.c. */
+  if (LL_DMA_IsActiveFlag_TC1(DMA1) == 1)
   {
-      LL_DMA_ClearFlag_TC1(DMA1);
-      on_dma_transfer_complete();
-  }
-  if (LL_DMA_IsActiveFlag_TE1(DMA1))
-  {
-      LL_DMA_ClearFlag_TE1(DMA1);
+    LL_DMA_ClearFlag_TC1(DMA1);
+
+    /* Stop TIM4 and thus the ADC */
+    TIM4->CR1 &= (uint16_t)~TIM_CR1_CEN;
+    in_reading = 0;
+
+    /* Keep track of integrations performed */
+    if (avg_exps == 1)
+    {
+      data_flag = 1;
+    }
+    else if (avg_exps > 1)
+    {
+      if (exps_left == avg_exps)
+      {
+        pulse_counter = 4;
+        data_flag = 2;
+      }
+      else if ((exps_left < avg_exps) && (exps_left > 1))
+      {
+        pulse_counter = 4;
+        data_flag = 3;
+      }
+      else if (exps_left == 1)
+      {
+        data_flag = 4;
+      }
+      exps_left--;
+    }
   }
   /* USER CODE END DMA1_Channel1_IRQn 0 */
   /* USER CODE BEGIN DMA1_Channel1_IRQn 1 */
@@ -227,10 +262,24 @@ void DMA1_Channel1_IRQHandler(void)
 void TIM2_IRQHandler(void)
 {
   /* USER CODE BEGIN TIM2_IRQn 0 */
-  if (LL_TIM_IsActiveFlag_UPDATE(TIM2))
+  /* CC1 fires on each ICG pulse (was CC3 on the F401 because ICG used
+   * TIM2_CH3 there; on L476 ICG is TIM2_CH1). Port of F401 TIM2_IRQHandler. */
+  if (LL_TIM_IsActiveFlag_CC1(TIM2) == 1)
   {
-      LL_TIM_ClearFlag_UPDATE(TIM2);
-      on_tim2_update();
+    LL_TIM_ClearFlag_CC1(TIM2);
+
+    if (pulse_counter == 2)
+      CCD_flushed = 1;
+    else if (pulse_counter == 4)
+    {
+      /* Restart TIM4 — this gets the ADC running, aligned to ICG */
+      TIM4->CR1 |= TIM_CR1_CEN;
+      in_reading = 1;
+    }
+
+    pulse_counter++;
+    if (pulse_counter > 12)
+      pulse_counter = 12;
   }
   /* USER CODE END TIM2_IRQn 0 */
   /* USER CODE BEGIN TIM2_IRQn 1 */

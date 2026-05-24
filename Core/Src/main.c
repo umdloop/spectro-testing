@@ -48,51 +48,62 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
-// Edit Check
+
+extern uint8_t CDC_Transmit_FS(uint8_t* Buf, uint16_t Len);
+
+/* Periods for the timers controlling SH- and ICG-pulses.
+ * Values are 10x the F401 numbers because the L476 timer tick is 80 MHz
+ * (vs 8 MHz on F401). 1/SH_period sets exposure time; ICG_period sets the
+ * frame interval. F401 used SH=5000, ICG=200000 -> same wall-clock here. */
+__IO uint32_t SH_period = 50000;
+__IO uint32_t ICG_period = 2000000;
+
+__IO uint16_t aTxBuffer[CCDSize];
+
+/* Flags */
+__IO uint8_t change_exposure_flag = 0; /* set by CDC RX when host sends new ICG/SH */
+__IO uint8_t data_flag = 0;
+/* Flag to signal what action to do in main-loop
+ *   0 do nothing
+ *   1 transmit data in aTxBuffer
+ */
+
+__IO uint8_t pulse_counter = 8;
+__IO uint8_t CCD_flushed = 0;  /* set to 1 by TIM2 IRQ after 2nd ICG pulse */
+__IO uint8_t in_reading = 0;   /* 1 while ADC is sampling a frame */
+__IO uint8_t coll_mode = 1;    /* 1 = continuous capture */
+__IO uint8_t avg_exps  = 1;    /* 1 = single-shot per frame (no averaging) */
+__IO uint8_t exps_left = 0;
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 void PeriphCommonClock_Config(void);
 /* USER CODE BEGIN PFP */
-
+void flush_CCD(void);
+void CCD_set_clocks(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-#define CCD_BUFFER_LEN 6000
-
-volatile uint16_t CCDPixelBuffer[CCD_BUFFER_LEN];
-volatile uint8_t frame_done = 0;
-volatile uint8_t frame_sent = 0;
-volatile uint8_t tim2_ready = 0;
+/* TIM Configuration (L476 port of F401 tcd1304-usb)
+ *   fM  (TIM3)  PA6 (CH1)  - master clock
+ *   SH  (TIM8)  PC8 (CH3)  - was TIM5 CH4 / PA3 on F401
+ *   ICG (TIM2)  PA5 (CH1)  - was TIM2 CH3 / PA2 on F401
+ *   CCD-output  PA3 (ADC1_IN8) - was PA0 / ADC1_IN0 on F401
+ */
 
 static void ADC_Calibrate_And_Enable(void)
 {
-    if (LL_ADC_IsEnabled(ADC1)) {
-        return;
-    }
+    if (LL_ADC_IsEnabled(ADC1)) return;
     LL_ADC_StartCalibration(ADC1, LL_ADC_SINGLE_ENDED);
     while (LL_ADC_IsCalibrationOnGoing(ADC1)) { }
-    /* 4 ADC clock cycles between calibration and enable */
+    /* short delay between calibration and enable */
     for (volatile uint32_t i = 0; i < 32; i++) { __NOP(); }
     LL_ADC_Enable(ADC1);
     while (!LL_ADC_IsActiveFlag_ADRDY(ADC1)) { }
 }
-
-static void DMA_Arm_For_Capture(void)
-{
-    LL_DMA_DisableChannel(DMA1, LL_DMA_CHANNEL_1);
-    LL_DMA_ClearFlag_GI1(DMA1);
-    LL_DMA_ConfigAddresses(DMA1, LL_DMA_CHANNEL_1,
-                           LL_ADC_DMA_GetRegAddr(ADC1, LL_ADC_DMA_REG_REGULAR_DATA),
-                           (uint32_t)CCDPixelBuffer,
-                           LL_DMA_DIRECTION_PERIPH_TO_MEMORY);
-    LL_DMA_SetDataLength(DMA1, LL_DMA_CHANNEL_1, CCD_BUFFER_LEN);
-    LL_DMA_EnableIT_TC(DMA1, LL_DMA_CHANNEL_1);
-    LL_DMA_EnableChannel(DMA1, LL_DMA_CHANNEL_1);
-}
-
 /* USER CODE END 0 */
 
 /**
@@ -136,35 +147,40 @@ int main(void)
   MX_USB_DEVICE_Init();
   MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
+  /* Enable the capture/compare interrupt for channel 1 (ICG rising edge on
+   * L476 — was CC3 on the F401 because ICG was TIM2_CH3 there). */
+  LL_TIM_EnableIT_CC1(TIM2);
 
-  /* Enable PWM channel outputs (LL OC init leaves them disabled) */
-  LL_TIM_CC_EnableChannel(TIM3, LL_TIM_CHANNEL_CH1); /* fM   on PA6 */
-  LL_TIM_CC_EnableChannel(TIM4, LL_TIM_CHANNEL_CH4); /* ADC trig (PB9 scope) */
-  LL_TIM_CC_EnableChannel(TIM2, LL_TIM_CHANNEL_CH1); /* ICG  on PA5 */
-  LL_TIM_CC_EnableChannel(TIM8, LL_TIM_CHANNEL_CH3); /* SH   on PC8 */
-  LL_TIM_EnableAllOutputs(TIM8); /* advanced timer MOE */
-
-  /* ADC voltage regulator was started in MX_ADC1_Init; now calibrate + enable */
-  ADC_Calibrate_And_Enable();
-
-  /* Arm DMA for the first capture before any trigger can arrive */
-  DMA_Arm_For_Capture();
-  LL_ADC_REG_StartConversion(ADC1); /* external trigger takes it from here */
-
-  /* TIM2 update event = end of one full ICG period -> tim2_ready */
-  LL_TIM_ClearFlag_UPDATE(TIM2);
-  LL_TIM_EnableIT_UPDATE(TIM2);
-
-  HAL_Delay(3000); /* window for the host Python script */
-
-  /* Start everything. Order matters: master (TIM3) last so the slaved
-   * timers come up with their counters at 0 in lockstep. TIM8 runs on
-   * its own internal clock; same APB so it stays tick-aligned. */
-  LL_TIM_EnableCounter(TIM4);
-  LL_TIM_EnableCounter(TIM2);
-  LL_TIM_SetCounter(TIM2, 66); /* phase offset between ICG and SH */
-  LL_TIM_EnableCounter(TIM8);
+  /**********************************/
+  /* Start output signal generation */
+  /**********************************/
+  /* Enable output channels (LL OC init leaves them disabled) */
+  LL_TIM_CC_EnableChannel(TIM3, LL_TIM_CHANNEL_CH1);
+  LL_TIM_CC_EnableChannel(TIM4, LL_TIM_CHANNEL_CH4);
+  /* Enable counter */
   LL_TIM_EnableCounter(TIM3);
+  LL_TIM_EnableCounter(TIM4);
+  /* stop ADC timer */
+  TIM4->CR1 &= (uint16_t)~TIM_CR1_CEN;
+
+  /* start TIM2 (ICG) and TIM8 (SH) */
+  LL_TIM_CC_EnableChannel(TIM2, LL_TIM_CHANNEL_CH1);
+  LL_TIM_CC_EnableChannel(TIM8, LL_TIM_CHANNEL_CH3);
+  LL_TIM_EnableAllOutputs(TIM8); /* advanced-timer MOE */
+  LL_TIM_EnableCounter(TIM2);
+  LL_TIM_EnableCounter(TIM8);
+
+  CCD_set_clocks();
+
+  /* Start the ADC, so it's ready to convert when ADC timer (TIM4) is restarted.
+   * L476 needs calibration + ADRDY wait first (F4 didn't). */
+  ADC_Calibrate_And_Enable();
+  LL_ADC_REG_StartConversion(ADC1);
+
+  /* F401 stays idle until a host command resets pulse_counter via flush_CCD().
+   * We have no command channel, so kick off a flush so frame 1 isn't garbage
+   * and the IRQ pulse_counter cycle (2 -> flushed, 4 -> start TIM4) begins. */
+  flush_CCD();
 
   /* USER CODE END 2 */
 
@@ -172,20 +188,29 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-      if (tim2_ready && !frame_done && !frame_sent)
-      {
-          DMA_Arm_For_Capture();
-          tim2_ready = 0;
-      }
+    if (change_exposure_flag == 1)
+    {
+      change_exposure_flag = 0;
 
-      if (frame_done && !frame_sent)
-      {
-          uint8_t header[] = "FRAME\n";
-          HAL_UART_Transmit(&huart1, header, sizeof(header) - 1, HAL_MAX_DELAY);
-          HAL_UART_Transmit(&huart1, (uint8_t*)CCDPixelBuffer,
-                            CCD_BUFFER_LEN * 2, HAL_MAX_DELAY);
-          frame_sent = 1;
-      }
+      /* wait for any in-flight ADC capture to finish */
+      while (in_reading == 1);
+
+      flush_CCD();
+      CCD_set_clocks();
+    }
+
+    switch (data_flag)
+    {
+      case 1: /* transmit data in aTxBuffer */
+        data_flag = 0;
+
+        /* continuous mode? then collect again at next ICG-pulse */
+        if (coll_mode == 1)
+          pulse_counter = 4;
+
+        CDC_Transmit_FS((uint8_t*) aTxBuffer, 2*CCDSize);
+        break;
+    }
 
     /* USER CODE END WHILE */
 
@@ -264,18 +289,44 @@ void PeriphCommonClock_Config(void)
 }
 
 /* USER CODE BEGIN 4 */
-/* IRQ handlers in stm32l4xx_it.c call back into these helpers */
-void on_tim2_update(void)
+/* Direct port of F401 flush_CCD(): run a short ICG cycle twice to dump
+ * residual charge before real readout. Flush periods scaled 10x to match
+ * F401 wall-clock at 80 MHz timer tick (was 8 MHz on F401). */
+void flush_CCD(void)
 {
-    tim2_ready = 1;
+    TIM2->ARR = 150000 - 1;
+    TIM8->ARR = 200 - 1;
+    TIM3->ARR = 40 - 1;   /* L476: 40 -> fM = 2 MHz (F401 had 10 @ 8 MHz tick) */
+
+    LL_TIM_GenerateEvent_UPDATE(TIM2);
+    LL_TIM_GenerateEvent_UPDATE(TIM3);
+    LL_TIM_GenerateEvent_UPDATE(TIM8);
+
+    /* align output */
+    TIM3->CNT = 0;
+    TIM2->CNT = 150000 - ICG_delay;
+    TIM8->CNT = 200 - SH_delay;
+
+    CCD_flushed = 0;
+    pulse_counter = 0;
+
+    while (CCD_flushed == 0);
 }
 
-void on_dma_transfer_complete(void)
+void CCD_set_clocks(void)
 {
-    /* One full frame of CCD_BUFFER_LEN samples landed. Stop the channel so
-     * we don't wrap into the next frame before the main loop sends this one. */
-    LL_DMA_DisableChannel(DMA1, LL_DMA_CHANNEL_1);
-    frame_done = 1;
+    TIM2->ARR = ICG_period - 1;
+    TIM8->ARR = SH_period - 1;
+    TIM3->ARR = 40 - 1;
+
+    LL_TIM_GenerateEvent_UPDATE(TIM2);
+    LL_TIM_GenerateEvent_UPDATE(TIM3);
+    LL_TIM_GenerateEvent_UPDATE(TIM8);
+
+    /* align output */
+    TIM3->CNT = 0;
+    TIM2->CNT = ICG_period - ICG_delay;
+    TIM8->CNT = SH_period - SH_delay;
 }
 /* USER CODE END 4 */
 
