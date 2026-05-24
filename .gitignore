@@ -1,0 +1,33 @@
+# Build output
+Debug/
+Release/
+build/
+
+# Compiled object / dependency / analysis files
+*.o
+*.d
+*.su
+*.cyclo
+*.map
+*.elf
+*.bin
+*.hex
+*.list
+*.lss
+*.size.stdout
+
+# CubeIDE / Eclipse workspace metadata
+.metadata/
+.settings/
+.cproject
+.project
+.osx.project
+.launches/
+*.launch.bak
+
+# CubeMX backup
+*.ioc.bak
+TCDproj.ioc~
+
+# macOS
+.DS_Store
