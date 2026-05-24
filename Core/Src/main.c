@@ -50,13 +50,19 @@
 /* USER CODE BEGIN PV */
 
 extern uint8_t CDC_Transmit_FS(uint8_t* Buf, uint16_t Len);
+extern USBD_HandleTypeDef hUsbDeviceFS;
 
-/* Periods for the timers controlling SH- and ICG-pulses.
- * Values are 10x the F401 numbers because the L476 timer tick is 80 MHz
- * (vs 8 MHz on F401). 1/SH_period sets exposure time; ICG_period sets the
- * frame interval. F401 used SH=5000, ICG=200000 -> same wall-clock here. */
+/* Periods for the timers controlling SH- and ICG-pulses. Sized for F401
+ * wall-clock parity (SH ~625 us, ICG ~250 ms / 4 Hz frame rate).
+ *
+ * SH is on TIM8 internal clock at 80 MHz (10x F401's 8 MHz), so SH_period
+ * scales 10x: 5000 -> 50000.
+ *
+ * ICG is on TIM2 clocked by TIM3 TRGO. TIM3 ARR=40 gives a 2 MHz tick
+ * (vs F401's 800 kHz: 8 MHz / 10). That's 2.5x faster than F401, so ICG_period
+ * scales 2.5x, not 10x: 200000 -> 500000. */
 __IO uint32_t SH_period = 50000;
-__IO uint32_t ICG_period = 2000000;
+__IO uint32_t ICG_period = 500000;
 
 __IO uint16_t aTxBuffer[CCDSize];
 
@@ -172,6 +178,17 @@ int main(void)
 
   CCD_set_clocks();
 
+  /* Arm DMA1 Channel 1 for ADC->memory transfers. Cube's adc.c sets the DMA
+   * *mode* (direction/circular/widths) but does NOT set addresses, length,
+   * the TC interrupt, or the channel enable bit — those land here. */
+  LL_DMA_DisableChannel(DMA1, LL_DMA_CHANNEL_1);
+  LL_DMA_SetPeriphAddress(DMA1, LL_DMA_CHANNEL_1,
+      LL_ADC_DMA_GetRegAddr(ADC1, LL_ADC_DMA_REG_REGULAR_DATA));
+  LL_DMA_SetMemoryAddress(DMA1, LL_DMA_CHANNEL_1, (uint32_t)aTxBuffer);
+  LL_DMA_SetDataLength(DMA1, LL_DMA_CHANNEL_1, CCDSize);
+  LL_DMA_EnableIT_TC(DMA1, LL_DMA_CHANNEL_1);
+  LL_DMA_EnableChannel(DMA1, LL_DMA_CHANNEL_1);
+
   /* Start the ADC, so it's ready to convert when ADC timer (TIM4) is restarted.
    * L476 needs calibration + ADRDY wait first (F4 didn't). */
   ADC_Calibrate_And_Enable();
@@ -208,7 +225,11 @@ int main(void)
         if (coll_mode == 1)
           pulse_counter = 4;
 
-        CDC_Transmit_FS((uint8_t*) aTxBuffer, 2*CCDSize);
+        /* Only transmit if the host has enumerated the CDC class. Without
+         * this guard, CDC_Transmit_FS dereferences a NULL pClassData and
+         * hard-faults if USB isn't plugged in / enumerated yet. */
+        if (hUsbDeviceFS.pClassData != NULL)
+          CDC_Transmit_FS((uint8_t*) aTxBuffer, 2*CCDSize);
         break;
     }
 
@@ -311,6 +332,10 @@ void flush_CCD(void)
     pulse_counter = 0;
 
     while (CCD_flushed == 0);
+
+    /* Restore operational ARRs so the next ICG/SH pulses fire at the
+     * capture timing, not the flush timing. */
+    CCD_set_clocks();
 }
 
 void CCD_set_clocks(void)

@@ -41,7 +41,12 @@
 
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN PV */
-
+extern __IO uint8_t data_flag;
+extern __IO uint8_t pulse_counter;
+extern __IO uint8_t CCD_flushed;
+extern __IO uint8_t in_reading;
+extern __IO uint8_t avg_exps;
+extern __IO uint8_t exps_left;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -49,20 +54,14 @@
 
 /* USER CODE END PFP */
 
-/* Private variables ---------------------------------------------------------*/
-/* USER CODE BEGIN PV */
-extern __IO uint8_t pulse_counter;
-extern __IO uint8_t CCD_flushed;
-
-extern __IO uint16_t aTxBuffer[CCDSize];
-extern __IO uint8_t avg_exps;
-extern __IO uint8_t exps_left;
-extern __IO uint8_t data_flag;
-extern __IO uint8_t in_reading;
-/* USER CODE END PV */
-
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+void HardFault_C_Handler(uint32_t *sp)
+{
+    (void)sp;
+    __asm volatile ("bkpt #0");
+    while (1) { }
+}
 /* USER CODE END 0 */
 
 /* External variables --------------------------------------------------------*/
@@ -96,7 +95,14 @@ void NMI_Handler(void)
 void HardFault_Handler(void)
 {
   /* USER CODE BEGIN HardFault_IRQn 0 */
-
+  /* Decide which stack was in use, pass it to the C handler */
+  __asm volatile (
+    "tst lr, #4              \n"
+    "ite eq                  \n"
+    "mrseq r0, msp           \n"
+    "mrsne r0, psp           \n"
+    "b HardFault_C_Handler   \n"
+  );
   /* USER CODE END HardFault_IRQn 0 */
   while (1)
   {
