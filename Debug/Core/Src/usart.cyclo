@@ -1,0 +1,4 @@
+../Drivers/STM32L4xx_HAL_Driver/Inc/stm32l4xx_ll_rcc.h:2950:22:LL_RCC_SetUSARTClockSource	1
+../Core/Src/usart.c:31:6:MX_USART1_UART_Init	2
+../Core/Src/usart.c:61:6:HAL_UART_MspInit	2
+../Core/Src/usart.c:96:6:HAL_UART_MspDeInit	2

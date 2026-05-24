@@ -51,12 +51,13 @@
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-
+extern void on_tim2_update(void);
+extern void on_dma_transfer_complete(void);
 /* USER CODE END 0 */
 
 /* External variables --------------------------------------------------------*/
 extern PCD_HandleTypeDef hpcd_USB_OTG_FS;
-extern DMA_HandleTypeDef hdma_adc1;
+extern UART_HandleTypeDef huart1;
 /* USER CODE BEGIN EV */
 
 /* USER CODE END EV */
@@ -200,17 +201,55 @@ void SysTick_Handler(void)
 /******************************************************************************/
 
 /**
-  * @brief This function handles DMA2 channel3 global interrupt.
+  * @brief This function handles DMA1 channel1 global interrupt.
   */
-void DMA2_Channel3_IRQHandler(void)
+void DMA1_Channel1_IRQHandler(void)
 {
-  /* USER CODE BEGIN DMA2_Channel3_IRQn 0 */
+  /* USER CODE BEGIN DMA1_Channel1_IRQn 0 */
+  if (LL_DMA_IsActiveFlag_TC1(DMA1))
+  {
+      LL_DMA_ClearFlag_TC1(DMA1);
+      on_dma_transfer_complete();
+  }
+  if (LL_DMA_IsActiveFlag_TE1(DMA1))
+  {
+      LL_DMA_ClearFlag_TE1(DMA1);
+  }
+  /* USER CODE END DMA1_Channel1_IRQn 0 */
+  /* USER CODE BEGIN DMA1_Channel1_IRQn 1 */
 
-  /* USER CODE END DMA2_Channel3_IRQn 0 */
-  HAL_DMA_IRQHandler(&hdma_adc1);
-  /* USER CODE BEGIN DMA2_Channel3_IRQn 1 */
+  /* USER CODE END DMA1_Channel1_IRQn 1 */
+}
 
-  /* USER CODE END DMA2_Channel3_IRQn 1 */
+/**
+  * @brief This function handles TIM2 global interrupt.
+  */
+void TIM2_IRQHandler(void)
+{
+  /* USER CODE BEGIN TIM2_IRQn 0 */
+  if (LL_TIM_IsActiveFlag_UPDATE(TIM2))
+  {
+      LL_TIM_ClearFlag_UPDATE(TIM2);
+      on_tim2_update();
+  }
+  /* USER CODE END TIM2_IRQn 0 */
+  /* USER CODE BEGIN TIM2_IRQn 1 */
+
+  /* USER CODE END TIM2_IRQn 1 */
+}
+
+/**
+  * @brief This function handles USART1 global interrupt.
+  */
+void USART1_IRQHandler(void)
+{
+  /* USER CODE BEGIN USART1_IRQn 0 */
+
+  /* USER CODE END USART1_IRQn 0 */
+  HAL_UART_IRQHandler(&huart1);
+  /* USER CODE BEGIN USART1_IRQn 1 */
+
+  /* USER CODE END USART1_IRQn 1 */
 }
 
 /**

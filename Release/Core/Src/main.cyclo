@@ -1,0 +1,7 @@
+../Core/Src/main.c:83:13:DMA_Arm_For_Capture	1
+../Core/Src/main.c:201:6:SystemClock_Config	7
+../Core/Src/main.c:253:6:PeriphCommonClock_Config	2
+../Core/Src/main.c:102:5:main	10
+../Core/Src/main.c:268:6:on_tim2_update	1
+../Core/Src/main.c:273:6:on_dma_transfer_complete	1
+../Core/Src/main.c:286:6:Error_Handler	1
